@@ -1,0 +1,178 @@
+---
+title: "Pathway-Based"
+author: "Paarth"
+date: "3/2/2022"
+output: html_document
+---
+```{r}
+rm(list = ls())
+library(reshape2)
+library(dplyr)
+
+first_sample="Liver"
+merge=0
+genes_of_interest = read.csv(
+  file = './files/Extended_ADME-PGx_Panel-ensembl.csv',
+  row.names = NULL,
+  header = TRUE,
+  sep=","
+)
+metafile=read.csv("./files/Liver_Animals_meta.csv")
+if (merge==1){
+  countsfile1=read.csv("./4cell_deseq_normalized.csv",row.names =  1)
+  countsfile2=read.csv("./lifenet_deseq_normalized.csv",row.names =  1)
+  countsfile=merge(countsfile1,countsfile2,by=0,all=TRUE)
+  rownames(countsfile)=countsfile$Row.names
+  countsfile=subset(countsfile,select=-c(Row.names))
+}else{
+  countsfile=read.csv("./files/Liver_Animals.csv",row.names =  1)
+}
+suppressMessages(library(biomaRt))
+gene_ids=row.names(countsfile)
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl",host="https://dec2021.archive.ensembl.org")
+genes_ensembl_entrez <- getBM(attributes = c('external_gene_name', 'ensembl_gene_id'),
+      filters = 'external_gene_name',
+      values = gene_ids, 
+      mart = ensembl)
+genes_ensembl_entrez=genes_ensembl_entrez[complete.cases(genes_ensembl_entrez), ]
+countsfile=merge(genes_ensembl_entrez,countsfile,by.x="external_gene_name",by.y=0,how="inner")
+# countsfile=subset(countsfile,select=-c(Name))
+countsfile=as.data.frame(countsfile)
+countsfile=subset(countsfile,select=-c(external_gene_name))
+countsfile=aggregate(.~ensembl_gene_id,countsfile,sum)
+countsfile=as.data.frame(countsfile)
+row.names(countsfile)=countsfile$ensembl_gene_id
+countsfile=subset(countsfile,select=-c(ensembl_gene_id))
+countsfile
+```
+```{r}
+cbind.fill <- function(...){
+     nm <- list(...)
+     nm <- lapply(nm, as.matrix)
+     n <- max(sapply(nm, nrow))
+     do.call(cbind, lapply(nm, function (x)
+     rbind(x, matrix(,n-nrow(x), ncol(x)))))
+}
+dir.create("./files/output")
+keep <-which(rowSums(countsfile) != 0)
+countsfile <- countsfile[keep, , drop = FALSE]
+genes_of_interest <-genes_of_interest %>% filter(genes_of_interest[,1] %in% rownames(countsfile))
+pathway_final = genes_of_interest[,1]
+
+jsd_values=c()
+prd_values=c()
+pbdm_values=matrix(,nrow=0,ncol=0)
+
+
+library(matrixStats)
+library(philentropy)
+library(wCorr)
+for (i in unique(metafile$Condition)){
+  Reference_Tissue=countsfile[,(metafile$Sample[(metafile$Condition==first_sample)])]
+  Prob_Reference_matrix <- as.data.frame(t(Reference_Tissue  %>% filter(row.names(Reference_Tissue) %in% pathway_final)))
+  Prob_Reference_matrix$sum=rowSums(Prob_Reference_matrix)
+  Prob_Reference_Tissue=Prob_Reference_matrix/Prob_Reference_matrix$sum
+  Prob_Reference_Tissue=subset(Prob_Reference_Tissue,select=-c(sum))
+  Prob_Reference_Tissue=as.data.frame(t(Prob_Reference_Tissue))
+  
+  Rankings_Reference_tissue=as.data.frame(t(colRanks(as.matrix(Reference_Tissue))))
+  colnames(Rankings_Reference_tissue)=colnames(Reference_Tissue)
+  row.names(Rankings_Reference_tissue)=row.names(Reference_Tissue)
+  Rankings_Reference_tissue=Rankings_Reference_tissue[pathway_final,]
+  
+    if (i==first_sample){
+      JSD_v <- c()
+      PRD_v <- c()
+      sample_name=c()
+      
+      
+      for (k in 1:((dim(Prob_Reference_Tissue)[2])-1)) {
+        for (l in (k+1):dim(Prob_Reference_Tissue)[2]) {
+          
+          prob_matrix = t(cbind(Prob_Reference_Tissue[,k],Prob_Reference_Tissue[,l]))
+          JS_divergence <- gJSD(prob_matrix,unit = "log2")
+          JSD_v <- rbind(JSD_v, round(sqrt(JS_divergence),digits=5))
+
+          #Calculating correlation distance
+          spearman=cor(Rankings_Reference_tissue[,k],Rankings_Reference_tissue[,l],method =  "pearson")
+          spearman=(1+spearman)/2
+          correlation_distance=1-spearman
+          PRD_v <- rbind(PRD_v, round(correlation_distance,digits=5))
+          sample_name=rbind(sample_name,paste(colnames(Prob_Reference_Tissue[k]),colnames(Prob_Reference_Tissue[l]),sep=" x "))
+        }
+      }
+      row.names(JSD_v)=sample_name
+      row.names(PRD_v)=sample_name
+      PBDM <- round((0.5 * JSD_v) + (0.5 * PRD_v),digits=5)
+      
+      pbdm_values=cbind.fill(pbdm_values,matrix(PBDM))
+      jsd_values[i]=mean(JSD_v)
+      prd_values[i]=mean(PRD_v)
+      file_name=paste0("./files/output/",i,"one",sep="")
+      PBDM_location=paste0(file_name,"PBDM.csv",sep="")
+      PRD_location=paste0(file_name,"PRD.csv",sep="")
+      JSD_location=paste0(file_name,"JSD.csv",sep="")
+      write.csv(PBDM, PBDM_location, row.names = FALSE)
+      write.csv(PRD_v, file = PRD_location, row.names = FALSE)
+      write.csv(JSD_v, file = JSD_location, row.names = FALSE)
+    }else{
+      Compared_Tissue=countsfile[,(metafile$Sample[(metafile$Condition==i)])]
+      Prob_Compared_matrix <- as.data.frame(t(Compared_Tissue  %>% filter(row.names(Compared_Tissue) %in% pathway_final)))
+      Prob_Compared_matrix$sum=rowSums(Prob_Compared_matrix)
+      Prob_Compared_Tissue=Prob_Compared_matrix/Prob_Compared_matrix$sum
+      Prob_Compared_Tissue=subset(Prob_Compared_Tissue,select=-c(sum))
+      Prob_Compared_Tissue=as.data.frame(t(Prob_Compared_Tissue))
+      
+      Rankings_Compared_Tissue=as.data.frame(t(colRanks(as.matrix(Compared_Tissue))))
+      colnames(Rankings_Compared_Tissue)=colnames(Compared_Tissue)
+      row.names(Rankings_Compared_Tissue)=row.names(Compared_Tissue)
+      Rankings_Compared_Tissue=Rankings_Compared_Tissue[pathway_final,]
+      JSD_v <- c()
+      PRD_v <- c()
+      sample_name=c()
+      for (k in 1:dim(Prob_Reference_Tissue)[2]) {
+          for (l in 1:dim(Prob_Compared_Tissue)[2]) {
+
+            #Calculating square root of the jenson shannon divergence
+            prob_matrix = t(cbind(Prob_Reference_Tissue[,k],Prob_Compared_Tissue[,l]))
+            JS_divergence <- gJSD(prob_matrix,unit = "log2",est.prob = NULL)
+            JSD_v <- rbind(JSD_v, round(sqrt(JS_divergence),digits=5))
+  
+            #Calculating correlation distance
+            spearman=cor(Rankings_Reference_tissue[,k],Rankings_Compared_Tissue[,l],method =  "pearson")
+          spearman=(1+spearman)/2
+          correlation_distance=1-spearman
+          PRD_v <- rbind(PRD_v, round(correlation_distance,digits=5))
+          sample_name=rbind(sample_name,paste(colnames(Prob_Reference_Tissue[k]),colnames(Prob_Compared_matrix[l]),sep=" x "))
+        }
+      }
+      row.names(JSD_v)=sample_name
+      row.names(PRD_v)=sample_name
+      PBDM <- round((0.5 * JSD_v) + (0.5 * PRD_v),digits=5)
+      pbdm_values=cbind.fill(pbdm_values,matrix(PBDM))
+      jsd_values[i]=mean(JSD_v)
+      prd_values[i]=mean(PRD_v)
+      file_name=paste0("./files/output/",i,"one",sep="")
+      PBDM_location=paste0(file_name,"PBDM.csv",sep="")
+      PRD_location=paste0(file_name,"PRD.csv",sep="")
+      JSD_location=paste0(file_name,"JSD.csv",sep="")
+      write.csv(PBDM, PBDM_location, row.names = FALSE)
+      write.csv(PRD_v, file = PRD_location, row.names = FALSE)
+      write.csv(JSD_v, file = JSD_location, row.names = FALSE)
+    }
+  }
+  pbdm_values=as.data.frame(pbdm_values)
+  colnames(pbdm_values)=unique(metafile$Condition)
+  pbdm_values=as.matrix(pbdm_values)
+  median_pbdm=colMedians(pbdm_values,na.rm=TRUE)
+  for (i in 1:length(unique(metafile$Condition)))
+  {
+    if (unique(metafile$Condition)[i]==first_sample)
+    {
+      print(paste0("Similarity within the ",unique(metafile$Condition)[i], " dataset is ",(1-median_pbdm[i])))
+    }else{
+      print(paste0("Similarity between ",unique(metafile$Condition)[i], " and ", first_sample, " dataset is ",(1-median_pbdm[i])))
+    }
+  }
+  write.csv(pbdm_values, file = "./files/output/pbdmvalues.csv", row.names = FALSE)
+```
