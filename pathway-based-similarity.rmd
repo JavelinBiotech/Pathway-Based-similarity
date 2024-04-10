@@ -29,7 +29,7 @@ if (merge==1){
 }
 suppressMessages(library(biomaRt))
 gene_ids=row.names(countsfile)
-ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl",host="https://dec2021.archive.ensembl.org")
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
 genes_ensembl_entrez <- getBM(attributes = c('external_gene_name', 'ensembl_gene_id'),
       filters = 'external_gene_name',
       values = gene_ids, 
